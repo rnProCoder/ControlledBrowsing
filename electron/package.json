@@ -1,0 +1,10 @@
+{
+  "name": "browse-control-electron",
+  "version": "1.0.0",
+  "description": "BrowseControl Electron App",
+  "main": "main.js",
+  "type": "module",
+  "dependencies": {
+    "electron-is-dev": "^2.0.0"
+  }
+}

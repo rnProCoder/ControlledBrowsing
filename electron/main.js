@@ -1,8 +1,13 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, Tray } = require('electron');
-const path = require('path');
-const isDev = require('electron-is-dev');
-const storage = require('./storage');
-const browserUtils = require('./browser-utils');
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, Tray } from 'electron';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import isDev from 'electron-is-dev';
+import * as storage from './storage.js';
+import * as browserUtils from './browser-utils.js';
+
+// ES Modules don't have __dirname, so we need to create it
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Global references to prevent garbage collection
 let mainWindow;

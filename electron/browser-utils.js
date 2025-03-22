@@ -7,7 +7,7 @@
  * @param {string} url - The URL to extract domain from
  * @returns {string} - The extracted domain
  */
-function getDomainFromUrl(url) {
+export function getDomainFromUrl(url) {
   try {
     if (!url) return '';
     if (!url.includes('://')) {
@@ -24,7 +24,7 @@ function getDomainFromUrl(url) {
  * @param {string} url - The URL to create a title for
  * @returns {string} - A user-friendly title
  */
-function getPageTitleFromUrl(url) {
+export function getPageTitleFromUrl(url) {
   const domain = getDomainFromUrl(url);
   if (!domain) return 'New Tab';
   
@@ -63,7 +63,7 @@ function getPageTitleFromUrl(url) {
  * @param {string} pageTitle - The page title if available
  * @returns {string} - The window title
  */
-function getWindowTitle(url, pageTitle) {
+export function getWindowTitle(url, pageTitle) {
   if (!url) return 'BrowseControl';
   const domain = getDomainFromUrl(url);
   
@@ -74,9 +74,3 @@ function getWindowTitle(url, pageTitle) {
   const derivedTitle = getPageTitleFromUrl(url);
   return `${derivedTitle} - BrowseControl`;
 }
-
-module.exports = {
-  getDomainFromUrl,
-  getPageTitleFromUrl,
-  getWindowTitle
-};

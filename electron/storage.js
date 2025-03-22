@@ -269,4 +269,29 @@ class ElectronStorage {
   }
 }
 
-module.exports = new ElectronStorage();
+const storage = new ElectronStorage();
+export default storage;
+
+// Export individual methods for easier imports
+export const login = storage.login.bind(storage);
+export const logout = storage.logout.bind(storage);
+export const getCurrentUser = storage.getCurrentUser.bind(storage);
+export const getUser = storage.getUser.bind(storage);
+export const getUserByUsername = storage.getUserByUsername.bind(storage);
+export const createUser = storage.createUser.bind(storage);
+export const updateUser = storage.updateUser.bind(storage);
+export const getAllUsers = storage.getAllUsers.bind(storage);
+export const deleteUser = storage.deleteUser.bind(storage);
+export const getWebsiteRule = storage.getWebsiteRule.bind(storage);
+export const createWebsiteRule = storage.createWebsiteRule.bind(storage);
+export const updateWebsiteRule = storage.updateWebsiteRule.bind(storage);
+export const getAllWebsiteRules = storage.getAllWebsiteRules.bind(storage);
+export const deleteWebsiteRule = storage.deleteWebsiteRule.bind(storage);
+export const getBrowsingActivity = storage.getBrowsingActivity.bind(storage);
+export const createBrowsingActivity = storage.createBrowsingActivity.bind(storage);
+export const getAllBrowsingActivities = storage.getAllBrowsingActivities.bind(storage);
+export const getUserBrowsingActivities = storage.getUserBrowsingActivities.bind(storage);
+export const getRecentBrowsingActivities = storage.getRecentBrowsingActivities.bind(storage);
+export const getAppSettings = storage.getAppSettings.bind(storage);
+export const updateAppSettings = storage.updateAppSettings.bind(storage);
+export const checkWebsiteAccess = storage.checkWebsiteAccess.bind(storage);
