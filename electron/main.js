@@ -1,73 +1,51 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const isDev = require('electron-is-dev');
-const fs = require('fs');
-const url = require('url');
+const storage = require('./storage');
 
-// Keep a global reference of the window object to prevent garbage collection
+// Keep a global reference of the window object to avoid garbage collection
 let mainWindow;
-let adminWindow;
 
-// Store for user settings and rules
-let userSettings = {
-  filteringEnabled: true,
-  loggingEnabled: true,
-  alertsEnabled: true
-};
-
-let websiteRules = [
-  { domain: '*.google.com', isAllowed: true, appliedTo: 'All Users', createdBy: 1 },
-  { domain: 'facebook.com', isAllowed: false, appliedTo: 'All Users', createdBy: 1 },
-  { domain: 'youtube.com', isAllowed: true, appliedTo: 'All Users', createdBy: 1 }
-];
-
-// User authentication info
-let users = [
-  { id: 1, username: 'admin', password: 'admin123', isAdmin: true, fullName: 'Administrator' },
-  { id: 2, username: 'user', password: 'user123', isAdmin: false, fullName: 'Regular User' }
-];
-
-let currentUser = null;
-
-// Browsing activity log
-let browsingActivities = [];
-
+// Create the browser window
 function createMainWindow() {
-  // Create the browser window
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    minWidth: 800,
+    minHeight: 600,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      enableRemoteModule: false,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      webviewTag: true // Enable webview tag for browser functionality
     },
-    icon: path.join(__dirname, 'icon.png'),
-    title: 'BrowseControl'
+    icon: path.join(__dirname, 'icons/icon.png')
   });
 
   // Load the app
-  const startUrl = isDev 
-    ? 'http://localhost:5000' // Development URL
-    : url.format({
-        pathname: path.join(__dirname, '../dist/index.html'),
-        protocol: 'file:',
-        slashes: true
-      });
-  
-  mainWindow.loadURL(startUrl);
-
-  // Open the DevTools in development mode
   if (isDev) {
+    // Load from development server
+    mainWindow.loadURL('http://localhost:5000');
+    // Open DevTools in development mode
     mainWindow.webContents.openDevTools();
+  } else {
+    // Load from production build
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Emitted when the window is closed
-  mainWindow.on('closed', () => mainWindow = null);
+  // Handle external links
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
 
-  // Custom native menu
-  const template = [
+  // Clean up when window is closed
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  // Create the application menu
+  const menu = Menu.buildFromTemplate([
     {
       label: 'File',
       submenu: [
@@ -99,250 +77,188 @@ function createMainWindow() {
       ]
     },
     {
-      label: 'Admin',
+      label: 'Window',
       submenu: [
-        { 
-          label: 'Dashboard',
-          click: () => {
-            if (currentUser && currentUser.isAdmin) {
-              mainWindow.loadURL(isDev ? 'http://localhost:5000/' : 'app://./index.html/');
-            } else {
-              dialog.showMessageBoxSync(mainWindow, {
-                type: 'error',
-                title: 'Access Denied',
-                message: 'You need administrator privileges to access this feature.'
-              });
-            }
-          }
-        },
-        { 
-          label: 'Website Rules',
-          click: () => {
-            if (currentUser && currentUser.isAdmin) {
-              mainWindow.loadURL(isDev ? 'http://localhost:5000/website-rules' : 'app://./index.html/website-rules');
-            } else {
-              dialog.showMessageBoxSync(mainWindow, {
-                type: 'error',
-                title: 'Access Denied',
-                message: 'You need administrator privileges to access this feature.'
-              });
-            }
-          }
-        }
-      ]
-    },
-    {
-      role: 'help',
-      submenu: [
-        {
-          label: 'About BrowseControl',
-          click: () => {
-            dialog.showMessageBoxSync(mainWindow, {
-              type: 'info',
-              title: 'About BrowseControl',
-              message: 'BrowseControl Browser v1.0.0\nA controlled browser environment for safer web browsing.'
-            });
-          }
-        }
+        { role: 'minimize' },
+        { role: 'close' }
       ]
     }
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
+  ]);
+  
   Menu.setApplicationMenu(menu);
 }
 
-// Initialize app when Electron is ready
+// Initialize the app when ready
 app.whenReady().then(() => {
   createMainWindow();
 
-  app.on('activate', () => {
-    // On macOS, re-create the window when clicking the dock icon if no windows are open
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-  });
-
-  // Set up IPC handlers for communication with renderer process
+  // Set up all IPC handlers for communication with renderer process
   setupIpcHandlers();
+
+  // For macOS: re-create window when dock icon is clicked
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createMainWindow();
+    }
+  });
 });
 
-// Quit when all windows are closed, except on macOS
+// Quit when all windows are closed (except on macOS)
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });
 
 // Setup IPC handlers for communication between main and renderer processes
 function setupIpcHandlers() {
   // Authentication
-  ipcMain.handle('login', (event, credentials) => {
-    const { username, password } = credentials;
-    const user = users.find(u => u.username === username && u.password === password);
-    if (user) {
-      currentUser = { ...user };
-      delete currentUser.password; // Don't send password back to renderer
-      return { success: true, user: currentUser };
-    }
-    return { success: false, message: 'Invalid username or password' };
-  });
-
-  ipcMain.handle('logout', () => {
-    currentUser = null;
-    return { success: true };
-  });
-
-  ipcMain.handle('get-current-user', () => {
-    return currentUser;
-  });
-
-  // Website access control
-  ipcMain.handle('check-website-access', (event, domain) => {
-    if (!userSettings.filteringEnabled) {
-      return { isAllowed: true };
-    }
-
-    // Log the access attempt
-    if (userSettings.loggingEnabled && currentUser) {
-      browsingActivities.push({
-        id: browsingActivities.length + 1,
-        userId: currentUser.id,
-        domain,
-        timestamp: new Date().toISOString(),
-        status: 'Pending'
-      });
-    }
-
-    // Check if the domain is allowed
-    const rule = findMatchingRule(domain);
-    const isAllowed = rule ? rule.isAllowed : true; // Default to allowed if no rule
-
-    // Update activity status
-    if (userSettings.loggingEnabled && currentUser) {
-      const activity = browsingActivities[browsingActivities.length - 1];
-      activity.status = isAllowed ? 'Allowed' : 'Blocked';
-    }
-
-    return { isAllowed, rule };
-  });
-
-  // Get website rules
-  ipcMain.handle('get-website-rules', () => {
-    return websiteRules;
-  });
-
-  // Add or update website rule
-  ipcMain.handle('add-website-rule', (event, rule) => {
-    if (!currentUser || !currentUser.isAdmin) {
-      return { success: false, message: 'Admin privileges required' };
-    }
-
-    const existingRuleIndex = websiteRules.findIndex(r => r.domain === rule.domain);
-    if (existingRuleIndex >= 0) {
-      websiteRules[existingRuleIndex] = { ...rule, createdBy: currentUser.id };
-    } else {
-      websiteRules.push({ ...rule, id: websiteRules.length + 1, createdBy: currentUser.id });
-    }
-
-    return { success: true };
-  });
-
-  // Delete website rule
-  ipcMain.handle('delete-website-rule', (event, ruleId) => {
-    if (!currentUser || !currentUser.isAdmin) {
-      return { success: false, message: 'Admin privileges required' };
-    }
-
-    const initialLength = websiteRules.length;
-    websiteRules = websiteRules.filter(r => r.id !== ruleId);
-
-    return { success: websiteRules.length < initialLength };
-  });
-
-  // Get settings
-  ipcMain.handle('get-settings', () => {
-    return userSettings;
-  });
-
-  // Update settings
-  ipcMain.handle('update-settings', (event, settings) => {
-    if (!currentUser || !currentUser.isAdmin) {
-      return { success: false, message: 'Admin privileges required' };
-    }
-
-    userSettings = { ...userSettings, ...settings };
-    return { success: true };
-  });
-
-  // Get browsing activities
-  ipcMain.handle('get-browsing-activities', () => {
-    if (!currentUser) {
-      return [];
-    }
-
-    if (currentUser.isAdmin) {
-      return browsingActivities;
-    } else {
-      return browsingActivities.filter(a => a.userId === currentUser.id);
+  ipcMain.handle('login', async (event, credentials) => {
+    try {
+      return await storage.login(credentials);
+    } catch (error) {
+      console.error('Login error:', error);
+      throw new Error('Authentication failed');
     }
   });
 
-  // Get users list (admin only)
-  ipcMain.handle('get-users', () => {
-    if (!currentUser || !currentUser.isAdmin) {
-      return { success: false, message: 'Admin privileges required' };
+  ipcMain.handle('logout', async () => {
+    try {
+      return await storage.logout();
+    } catch (error) {
+      console.error('Logout error:', error);
+      throw new Error('Logout failed');
     }
-
-    // Return users without passwords
-    return users.map(user => {
-      const { password, ...userWithoutPassword } = user;
-      return userWithoutPassword;
-    });
   });
 
-  // Add or update user (admin only)
-  ipcMain.handle('add-user', (event, user) => {
-    if (!currentUser || !currentUser.isAdmin) {
-      return { success: false, message: 'Admin privileges required' };
+  ipcMain.handle('get-current-user', async () => {
+    try {
+      return await storage.getCurrentUser();
+    } catch (error) {
+      console.error('Get current user error:', error);
+      return null;
     }
-
-    const existingUser = users.find(u => u.username === user.username);
-    if (existingUser) {
-      return { success: false, message: 'Username already exists' };
-    }
-
-    users.push({ ...user, id: users.length + 1 });
-    return { success: true };
   });
 
-  // Update user (admin only)
-  ipcMain.handle('update-user', (event, { id, data }) => {
-    if (!currentUser || !currentUser.isAdmin) {
-      return { success: false, message: 'Admin privileges required' };
+  // Website Rules
+  ipcMain.handle('get-website-rules', async () => {
+    try {
+      return await storage.getAllWebsiteRules();
+    } catch (error) {
+      console.error('Get website rules error:', error);
+      throw new Error('Failed to fetch website rules');
     }
+  });
 
-    const userIndex = users.findIndex(u => u.id === id);
-    if (userIndex < 0) {
-      return { success: false, message: 'User not found' };
+  ipcMain.handle('add-website-rule', async (event, rule) => {
+    try {
+      return await storage.createWebsiteRule(rule);
+    } catch (error) {
+      console.error('Add website rule error:', error);
+      throw new Error('Failed to add website rule');
     }
+  });
 
-    users[userIndex] = { ...users[userIndex], ...data };
-    return { success: true };
+  ipcMain.handle('delete-website-rule', async (event, ruleId) => {
+    try {
+      return await storage.deleteWebsiteRule(ruleId);
+    } catch (error) {
+      console.error('Delete website rule error:', error);
+      throw new Error('Failed to delete website rule');
+    }
+  });
+
+  // User Management
+  ipcMain.handle('get-users', async () => {
+    try {
+      return await storage.getAllUsers();
+    } catch (error) {
+      console.error('Get users error:', error);
+      throw new Error('Failed to fetch users');
+    }
+  });
+
+  ipcMain.handle('add-user', async (event, user) => {
+    try {
+      return await storage.createUser(user);
+    } catch (error) {
+      console.error('Add user error:', error);
+      throw new Error('Failed to add user');
+    }
+  });
+
+  ipcMain.handle('update-user', async (event, { id, data }) => {
+    try {
+      return await storage.updateUser(id, data);
+    } catch (error) {
+      console.error('Update user error:', error);
+      throw new Error('Failed to update user');
+    }
+  });
+
+  // Browsing Activity
+  ipcMain.handle('get-browsing-activities', async () => {
+    try {
+      return await storage.getAllBrowsingActivities();
+    } catch (error) {
+      console.error('Get browsing activities error:', error);
+      throw new Error('Failed to fetch browsing activities');
+    }
+  });
+
+  // Website Access Control
+  ipcMain.handle('check-website-access', async (event, domain) => {
+    try {
+      const currentUser = await storage.getCurrentUser();
+      if (!currentUser) {
+        throw new Error('User not authenticated');
+      }
+      
+      return await storage.checkWebsiteAccess(currentUser.id, domain);
+    } catch (error) {
+      console.error('Check website access error:', error);
+      throw new Error('Failed to check website access');
+    }
+  });
+
+  // Settings
+  ipcMain.handle('get-settings', async () => {
+    try {
+      return await storage.getAppSettings();
+    } catch (error) {
+      console.error('Get settings error:', error);
+      throw new Error('Failed to fetch settings');
+    }
+  });
+
+  ipcMain.handle('update-settings', async (event, settings) => {
+    try {
+      return await storage.updateAppSettings(settings);
+    } catch (error) {
+      console.error('Update settings error:', error);
+      throw new Error('Failed to update settings');
+    }
   });
 }
 
-// Helper function to find matching rule for a domain
+// Function to check if a domain matches any rule
 function findMatchingRule(domain) {
-  // Exact match
-  let rule = websiteRules.find(r => r.domain === domain);
-  if (rule) return rule;
-
-  // Match with wildcard (e.g., *.example.com)
-  const domainParts = domain.split('.');
-  if (domainParts.length > 1) {
-    const baseDomain = domainParts.slice(domainParts.length - 2).join('.');
-    rule = websiteRules.find(r => {
-      return r.domain === `*.${baseDomain}`;
-    });
-    if (rule) return rule;
+  const rules = storage.getAllWebsiteRules();
+  
+  // Check for exact domain match
+  const exactMatch = rules.find(rule => rule.domain === domain);
+  if (exactMatch) {
+    return exactMatch;
   }
-
+  
+  // Check for wildcard domains (*.example.com)
+  const wildcardMatches = rules.filter(rule => rule.domain.startsWith('*.'));
+  for (const rule of wildcardMatches) {
+    const baseDomain = rule.domain.substring(2); // Remove '*.'
+    if (domain.endsWith(baseDomain)) {
+      return rule;
+    }
+  }
+  
   return null;
 }

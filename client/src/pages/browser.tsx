@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect } from "react";
+import { useState, FormEvent, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
@@ -23,7 +23,9 @@ import {
   XCircle,
   Search,
   Globe,
-  Info
+  Info,
+  Plus,
+  X
 } from "lucide-react";
 import {
   Tabs,
@@ -37,6 +39,31 @@ import {
   AlertTitle,
 } from "@/components/ui/alert";
 
+// Type definitions for Electron API
+declare global {
+  interface HTMLWebViewElement extends HTMLElement {
+    src: string;
+    reload: () => void;
+    goBack: () => void;
+    goForward: () => void;
+  }
+  
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: any;
+    }
+  }
+  
+  interface Window {
+    electronAPI?: {
+      // Website Access Control
+      checkWebsiteAccess: (domain: string) => Promise<{isAllowed: boolean, rule?: any}>;
+      // Browser Activity
+      createBrowsingActivity: (activityData: any) => Promise<any>;
+    };
+  }
+}
+
 export default function Browser() {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -45,17 +72,40 @@ export default function Browser() {
   const [loading, setLoading] = useState<boolean>(false);
   const [accessDenied, setAccessDenied] = useState<boolean>(false);
   const [accessRule, setAccessRule] = useState<any>(null);
+  const [tabs, setTabs] = useState<{id: number, url: string, title: string}[]>([]);
+  const [activeTab, setActiveTab] = useState<number>(0);
+  const webviewRef = useRef<HTMLWebViewElement | null>(null);
+  const isElectron = !!window.electronAPI;
+  
+  // Define the app settings type
+  interface AppSettings {
+    id: number;
+    filteringEnabled: boolean;
+    loggingEnabled: boolean;
+    defaultBrowserHomepage?: string;
+    retentionPeriodDays?: number;
+    notifyOnBlocked?: boolean;
+  }
   
   // Get app settings
-  const { data: settings } = useQuery({
+  const { data: settings } = useQuery<AppSettings>({
     queryKey: ["/api/settings"],
   });
 
-  const checkAccessMutation = useMutation({
-    mutationFn: async (domain: string) => {
+  // Function to check website access through Electron IPC or web API
+  const checkWebsiteAccess = async (domain: string) => {
+    if (isElectron && window.electronAPI) {
+      // Use Electron IPC
+      return await window.electronAPI.checkWebsiteAccess(domain);
+    } else {
+      // Use web API
       const res = await apiRequest("POST", "/api/check-access", { domain });
-      return res.json();
-    },
+      return await res.json();
+    }
+  };
+
+  const checkAccessMutation = useMutation({
+    mutationFn: checkWebsiteAccess,
     onSuccess: (data) => {
       setAccessDenied(!data.isAllowed);
       setAccessRule(data.rule);
@@ -103,8 +153,27 @@ export default function Browser() {
     const domain = getDomainFromUrl(processedUrl);
     
     try {
-      await checkAccessMutation.mutateAsync(domain);
-      setCurrentUrl(processedUrl);
+      const accessResult = await checkAccessMutation.mutateAsync(domain);
+      
+      if (accessResult.isAllowed) {
+        setCurrentUrl(processedUrl);
+        
+        // If in Electron, navigate the webview
+        if (isElectron && webviewRef.current) {
+          webviewRef.current.src = processedUrl;
+        }
+        
+        // Update the current tab
+        if (tabs.length > 0) {
+          const updatedTabs = [...tabs];
+          updatedTabs[activeTab] = {
+            ...updatedTabs[activeTab],
+            url: processedUrl,
+            title: getDomainFromUrl(processedUrl)
+          };
+          setTabs(updatedTabs);
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -116,11 +185,57 @@ export default function Browser() {
   };
 
   const handleRefresh = () => {
-    handleNavigate();
+    if (isElectron && webviewRef.current) {
+      webviewRef.current.reload();
+    } else {
+      handleNavigate();
+    }
+  };
+
+  const handleGoBack = () => {
+    if (isElectron && webviewRef.current) {
+      webviewRef.current.goBack();
+    }
+  };
+
+  const handleGoForward = () => {
+    if (isElectron && webviewRef.current) {
+      webviewRef.current.goForward();
+    }
+  };
+
+  const addNewTab = () => {
+    const newTabId = tabs.length > 0 ? Math.max(...tabs.map(tab => tab.id)) + 1 : 1;
+    const newTab = {
+      id: newTabId,
+      url: '',
+      title: 'New Tab'
+    };
+    setTabs([...tabs, newTab]);
+    setActiveTab(tabs.length);
+  };
+
+  const closeTab = (tabIndex: number) => {
+    if (tabs.length <= 1) return;
+    
+    const newTabs = tabs.filter((_, index) => index !== tabIndex);
+    setTabs(newTabs);
+    
+    // Adjust active tab if needed
+    if (activeTab === tabIndex) {
+      setActiveTab(Math.max(0, tabIndex - 1));
+    } else if (activeTab > tabIndex) {
+      setActiveTab(activeTab - 1);
+    }
   };
 
   // Set default homepage on first load
   useEffect(() => {
+    if (tabs.length === 0) {
+      // Create initial tab
+      setTabs([{ id: 1, url: '', title: 'New Tab' }]);
+    }
+    
     if (!currentUrl) {
       setUrl("google.com");
       handleNavigate();
@@ -133,14 +248,52 @@ export default function Browser() {
       pageTitle="Secure Browser"
       pageDescription="Browse the web with administrative controls"
     >
-      <div className="mb-6">
+      <div className="mb-2">
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-2">
+            {/* Tab bar */}
+            <div className="flex items-center space-x-1 mb-2 overflow-x-auto scrollbar-hide">
+              {tabs.map((tab, index) => (
+                <div
+                  key={tab.id}
+                  className={`flex items-center px-3 py-1.5 rounded-t-md cursor-pointer ${
+                    activeTab === index
+                      ? "bg-gray-100 border-b-2 border-primary"
+                      : "bg-gray-50 hover:bg-gray-100"
+                  }`}
+                  onClick={() => setActiveTab(index)}
+                >
+                  <span className="max-w-[120px] truncate text-sm">
+                    {tab.title || "New Tab"}
+                  </span>
+                  {tabs.length > 1 && (
+                    <button
+                      className="ml-2 text-gray-400 hover:text-gray-700"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeTab(index);
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                className="p-1 rounded-md hover:bg-gray-100"
+                onClick={addNewTab}
+                title="New Tab"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Browser controls */}
             <div className="flex items-center space-x-2">
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => {/* Would go back in browser history */}}
+                onClick={handleGoBack}
                 disabled={loading}
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -148,7 +301,7 @@ export default function Browser() {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => {/* Would go forward in browser history */}}
+                onClick={handleGoForward}
                 disabled={loading}
               >
                 <ArrowRight className="h-4 w-4" />
@@ -208,8 +361,8 @@ export default function Browser() {
         </Card>
       </div>
 
-      {!settings?.filteringEnabled && (
-        <Alert className="mb-6 border-yellow-300 bg-yellow-50 text-yellow-800">
+      {settings && !settings.filteringEnabled && (
+        <Alert className="mb-4 border-yellow-300 bg-yellow-50 text-yellow-800">
           <Info className="h-4 w-4" />
           <AlertTitle>Filtering Disabled</AlertTitle>
           <AlertDescription>
@@ -233,7 +386,7 @@ export default function Browser() {
                 <ul className="text-sm text-gray-500 space-y-1">
                   <li><span className="font-medium">Domain:</span> {accessRule.domain}</li>
                   <li><span className="font-medium">Type:</span> {accessRule.isAllowed ? "Allow" : "Block"}</li>
-                  <li><span className="font-medium">Applied To:</span> {accessRule.appliedTo}</li>
+                  <li><span className="font-medium">Applied To:</span> {accessRule.appliedTo || "All Users"}</li>
                 </ul>
               </div>
             )}
@@ -247,7 +400,37 @@ export default function Browser() {
             </Button>
           </div>
         </div>
+      ) : isElectron ? (
+        // Electron browser view using webview tag
+        <div className="h-[calc(100vh-220px)] w-full bg-white rounded-lg shadow-sm overflow-hidden">
+          {currentUrl ? (
+            // @ts-ignore - webview is a valid HTML element in Electron
+            <webview
+              ref={webviewRef}
+              src={currentUrl}
+              className="w-full h-full border"
+              style={{ display: loading ? 'none' : 'flex' }}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <div className="text-center">
+                <Globe className="h-16 w-16 mx-auto mb-4 text-gray-300" />
+                <h2 className="text-xl font-semibold text-gray-700 mb-2">Enter a URL to start browsing</h2>
+                <p className="text-gray-500 mb-6">
+                  Type a website address in the search bar above and click Go
+                </p>
+              </div>
+            </div>
+          )}
+          
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-80">
+              <Loader2 className="h-10 w-10 animate-spin text-[#0078D4]" />
+            </div>
+          )}
+        </div>
       ) : (
+        // Web application view
         <Tabs defaultValue="browse" className="w-full">
           <TabsList className="mb-4 w-full max-w-md mx-auto grid grid-cols-2">
             <TabsTrigger value="browse">
@@ -282,7 +465,7 @@ export default function Browser() {
                         For security and privacy reasons, content from {getDomainFromUrl(currentUrl)} is not shown in this demo.
                       </p>
                       <p className="text-gray-400 text-sm mt-2">
-                        In a real application, an iframe or web view would display the website here.
+                        In the Electron app, a webview would display the website here.
                       </p>
                     </div>
                   </div>
