@@ -50,10 +50,11 @@ declare global {
     getTitle?: () => string; // Optional method to get page title
   }
   
-  // Add webview to JSX elements with proper typing to avoid type errors
+  // Add webview to JSX elements
   namespace JSX {
     interface IntrinsicElements {
-      webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLWebViewElement>, HTMLWebViewElement>;
+      // Use any for webview attributes to avoid conflicts with existing definitions
+      webview: any;
     }
   }
   
@@ -305,7 +306,7 @@ export default function Browser() {
             // Also try to get a better title from Electron if needed
             if (!pageTitle || pageTitle === getDomainFromUrl(webview.src)) {
               window.electronAPI.getPageTitle(webview.src)
-                .then(title => {
+                .then((title: string) => {
                   if (title) {
                     // Update the tab with this better title
                     const updatedTabs = [...tabs];
@@ -315,7 +316,7 @@ export default function Browser() {
                     };
                     setTabs(updatedTabs);
                   }
-                }).catch(err => console.error("Error getting page title:", err));
+                }).catch((err: Error) => console.error("Error getting page title:", err));
             }
           }
           
