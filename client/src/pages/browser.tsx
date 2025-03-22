@@ -41,25 +41,32 @@ import {
 
 // Type definitions for Electron API
 declare global {
+  // Simple WebView element interface for Electron
   interface HTMLWebViewElement extends HTMLElement {
     src: string;
     reload: () => void;
     goBack: () => void;
     goForward: () => void;
+    getTitle?: () => string; // Optional method to get page title
   }
   
+  // Add webview to JSX elements with proper typing to avoid type errors
   namespace JSX {
     interface IntrinsicElements {
-      webview: any;
+      webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLWebViewElement>, HTMLWebViewElement>;
     }
   }
   
+  // Electron API interface
   interface Window {
     electronAPI?: {
       // Website Access Control
       checkWebsiteAccess: (domain: string) => Promise<{isAllowed: boolean, rule?: any}>;
       // Browser Activity
       createBrowsingActivity: (activityData: any) => Promise<any>;
+      // Window Title Management
+      setWindowTitle: (data: { url: string, pageTitle?: string }) => Promise<boolean>;
+      getPageTitle: (url: string) => Promise<string>;
     };
   }
 }
@@ -101,6 +108,32 @@ export default function Browser() {
       // Use web API
       const res = await apiRequest("POST", "/api/check-access", { domain });
       return await res.json();
+    }
+  };
+  
+  // Function to log browsing activity
+  const logBrowsingActivity = async (url: string, isBlocked: boolean) => {
+    try {
+      if (!url || !settings?.loggingEnabled) return;
+      
+      const domain = getDomainFromUrl(url);
+      const activityData = {
+        url: url,
+        domain: domain,
+        timestamp: new Date().toISOString(),
+        isBlocked: isBlocked,
+        browserInfo: navigator.userAgent
+      };
+      
+      if (isElectron && window.electronAPI) {
+        // Use Electron IPC
+        await window.electronAPI.createBrowsingActivity(activityData);
+      } else {
+        // Use web API
+        await apiRequest("POST", "/api/browsing-activities", activityData);
+      }
+    } catch (error) {
+      console.error("Failed to log browsing activity:", error);
     }
   };
 
@@ -155,6 +188,9 @@ export default function Browser() {
     try {
       const accessResult = await checkAccessMutation.mutateAsync(domain);
       
+      // Log the browsing activity regardless of whether access is allowed
+      await logBrowsingActivity(processedUrl, !accessResult.isAllowed);
+      
       if (accessResult.isAllowed) {
         setCurrentUrl(processedUrl);
         
@@ -174,6 +210,13 @@ export default function Browser() {
           setTabs(updatedTabs);
         }
       }
+    } catch (error) {
+      console.error("Navigation error:", error);
+      toast({
+        title: "Navigation Error",
+        description: "Failed to navigate to the requested website.",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
@@ -229,6 +272,84 @@ export default function Browser() {
     }
   };
 
+  // Set up webview event listeners
+  useEffect(() => {
+    if (isElectron && webviewRef.current) {
+      const webview = webviewRef.current;
+      
+      const handleDidStartLoading = () => {
+        setLoading(true);
+      };
+      
+      const handleDidStopLoading = () => {
+        setLoading(false);
+      };
+      
+      const handleDidNavigate = () => {
+        if (webview.src) {
+          // Update the URL bar
+          setUrl(webview.src);
+          
+          // Get better page title if possible
+          let pageTitle = getDomainFromUrl(webview.src);
+          
+          // Try to get the page title from the webview
+          if (webview.getTitle) {
+            pageTitle = webview.getTitle();
+          }
+          
+          // Update the window title via Electron
+          if (isElectron && window.electronAPI) {
+            window.electronAPI.setWindowTitle({ url: webview.src, pageTitle });
+            
+            // Also try to get a better title from Electron if needed
+            if (!pageTitle || pageTitle === getDomainFromUrl(webview.src)) {
+              window.electronAPI.getPageTitle(webview.src)
+                .then(title => {
+                  if (title) {
+                    // Update the tab with this better title
+                    const updatedTabs = [...tabs];
+                    updatedTabs[activeTab] = {
+                      ...updatedTabs[activeTab],
+                      title: title
+                    };
+                    setTabs(updatedTabs);
+                  }
+                }).catch(err => console.error("Error getting page title:", err));
+            }
+          }
+          
+          // Update current tab
+          if (tabs.length > 0) {
+            const updatedTabs = [...tabs];
+            updatedTabs[activeTab] = {
+              ...updatedTabs[activeTab],
+              url: webview.src,
+              title: pageTitle || getDomainFromUrl(webview.src)
+            };
+            setTabs(updatedTabs);
+          }
+          
+          // Log the navigation
+          logBrowsingActivity(webview.src, false);
+        }
+      };
+      
+      // Add event listeners
+      webview.addEventListener('did-start-loading', handleDidStartLoading);
+      webview.addEventListener('did-stop-loading', handleDidStopLoading);
+      webview.addEventListener('did-navigate', handleDidNavigate);
+      
+      // Clean up event listeners
+      return () => {
+        webview.removeEventListener('did-start-loading', handleDidStartLoading);
+        webview.removeEventListener('did-stop-loading', handleDidStopLoading);
+        webview.removeEventListener('did-navigate', handleDidNavigate);
+      };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isElectron, activeTab, tabs.length]);
+  
   // Set default homepage on first load
   useEffect(() => {
     if (tabs.length === 0) {

@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, Tray } = require('electron');
 const path = require('path');
 const isDev = require('electron-is-dev');
 const storage = require('./storage');
+const browserUtils = require('./browser-utils');
 
-// Keep a global reference of the window object to avoid garbage collection
+// Global references to prevent garbage collection
 let mainWindow;
+let tray;
 
 // Create the browser window
 function createMainWindow() {
@@ -49,6 +51,13 @@ function createMainWindow() {
     {
       label: 'File',
       submenu: [
+        { 
+          label: 'Hide to Tray',
+          click: () => {
+            mainWindow.hide();
+          }
+        },
+        { type: 'separator' },
         { role: 'quit' }
       ]
     },
@@ -86,11 +95,65 @@ function createMainWindow() {
   ]);
   
   Menu.setApplicationMenu(menu);
+  
+  // Set up minimize to tray functionality
+  handleWindowClose();
+}
+
+// Create system tray
+function createTray() {
+  // Use a default icon path (should create this file)
+  const iconPath = path.join(__dirname, 'icons/tray-icon.png');
+  tray = new Tray(iconPath);
+  
+  const contextMenu = Menu.buildFromTemplate([
+    { 
+      label: 'Show BrowseControl', 
+      click: () => {
+        if (mainWindow === null) {
+          createMainWindow();
+        } else {
+          mainWindow.show();
+        }
+      } 
+    },
+    { type: 'separator' },
+    { 
+      label: 'Settings',
+      click: () => {
+        if (mainWindow === null) {
+          createMainWindow();
+        }
+        mainWindow.show();
+        mainWindow.webContents.send('navigate-to', '/settings');
+      }
+    },
+    { type: 'separator' },
+    { 
+      label: 'Quit', 
+      click: () => {
+        app.quit();
+      } 
+    }
+  ]);
+
+  tray.setToolTip('BrowseControl');
+  tray.setContextMenu(contextMenu);
+  
+  // Double-click on the tray icon to show the app
+  tray.on('double-click', () => {
+    if (mainWindow === null) {
+      createMainWindow();
+    } else {
+      mainWindow.show();
+    }
+  });
 }
 
 // Initialize the app when ready
 app.whenReady().then(() => {
   createMainWindow();
+  createTray();
 
   // Set up all IPC handlers for communication with renderer process
   setupIpcHandlers();
@@ -103,15 +166,71 @@ app.whenReady().then(() => {
   });
 });
 
-// Quit when all windows are closed (except on macOS)
+// When all windows are closed, don't quit the app since we have a tray icon
 app.on('window-all-closed', () => {
+  // On macOS it's common to re-create a window when
+  // the dock icon is clicked and there are no other windows open.
   if (process.platform !== 'darwin') {
-    app.quit();
+    // Don't quit the app when windows are closed
+    // The app continues running in the background with the tray icon
   }
 });
 
+// Handle window close event - minimize to tray instead of closing
+function handleWindowClose() {
+  if (mainWindow) {
+    mainWindow.on('close', (event) => {
+      // Prevent the window from actually closing
+      event.preventDefault();
+      // Hide it instead
+      mainWindow.hide();
+      
+      // On macOS, also hide dock icon when all windows are hidden
+      if (process.platform === 'darwin') {
+        app.dock.hide();
+      }
+    });
+  }
+}
+
 // Setup IPC handlers for communication between main and renderer processes
 function setupIpcHandlers() {
+  // Window Controls
+  ipcMain.handle('hide-window', () => {
+    if (mainWindow) {
+      mainWindow.hide();
+    }
+    return true;
+  });
+
+  ipcMain.handle('show-window', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      createMainWindow();
+    }
+    return true;
+  });
+
+  ipcMain.handle('quit-app', () => {
+    app.quit();
+    return true;
+  });
+  
+  // Window title and page management
+  ipcMain.handle('set-window-title', (event, { url, pageTitle }) => {
+    if (mainWindow) {
+      const title = browserUtils.getWindowTitle(url, pageTitle);
+      mainWindow.setTitle(title);
+    }
+    return true;
+  });
+
+  ipcMain.handle('get-page-title', (event, url) => {
+    return browserUtils.getPageTitleFromUrl(url);
+  });
+
   // Authentication
   ipcMain.handle('login', async (event, credentials) => {
     try {
@@ -203,6 +322,26 @@ function setupIpcHandlers() {
     } catch (error) {
       console.error('Get browsing activities error:', error);
       throw new Error('Failed to fetch browsing activities');
+    }
+  });
+  
+  ipcMain.handle('create-browsing-activity', async (event, activity) => {
+    try {
+      const currentUser = await storage.getCurrentUser();
+      if (!currentUser) {
+        throw new Error('User not authenticated');
+      }
+      
+      // Make sure userId is set to current user
+      const activityWithUser = {
+        ...activity,
+        userId: currentUser.id
+      };
+      
+      return await storage.createBrowsingActivity(activityWithUser);
+    } catch (error) {
+      console.error('Create browsing activity error:', error);
+      throw new Error('Failed to record browsing activity');
     }
   });
 

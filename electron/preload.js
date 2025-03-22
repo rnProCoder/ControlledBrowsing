@@ -28,5 +28,25 @@ contextBridge.exposeInMainWorld(
     
     // Browsing Activity
     getBrowsingActivities: () => ipcRenderer.invoke('get-browsing-activities'),
+    createBrowsingActivity: (activity) => ipcRenderer.invoke('create-browsing-activity', activity),
+    
+    // Browser Controls
+    hideWindow: () => ipcRenderer.invoke('hide-window'),
+    showWindow: () => ipcRenderer.invoke('show-window'),
+    quitApp: () => ipcRenderer.invoke('quit-app'),
+    
+    // Window title management
+    setWindowTitle: (data) => ipcRenderer.invoke('set-window-title', data),
+    getPageTitle: (url) => ipcRenderer.invoke('get-page-title', url),
+    
+    // Window/page navigation
+    onNavigateTo: (callback) => {
+      // Remove existing listeners to avoid duplicates
+      ipcRenderer.removeAllListeners('navigate-to');
+      ipcRenderer.on('navigate-to', (_, url) => callback(url));
+      return () => {
+        ipcRenderer.removeAllListeners('navigate-to');
+      };
+    }
   }
 );
